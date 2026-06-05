@@ -7,12 +7,15 @@ import subprocess
 import platform
 from pathlib import Path
 
+from llm_provider import get_text_model
+
 try:
     import pyautogui
     pyautogui.FAILSAFE = True
     pyautogui.PAUSE    = 0.05
     _PYAUTOGUI = True
-except ImportError:
+except Exception:
+    pyautogui = None
     _PYAUTOGUI = False
 
 try:
@@ -569,10 +572,7 @@ _DANGEROUS_ACTIONS = {"restart", "shutdown"}
 
 
 def _detect_action(description: str) -> dict:
-
-    import google.generativeai as genai
-    genai.configure(api_key=_get_api_key())
-    model = genai.GenerativeModel("gemini-2.5-flash-lite")
+    model = get_text_model("gemini-2.5-flash-lite")
 
     available = ", ".join(sorted(ACTION_MAP.keys())) + \
                 ", volume_set, type_text, press_key, reload_n"

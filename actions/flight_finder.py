@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from config import is_windows, is_mac, is_linux
+from llm_provider import get_text_model
 
 def _get_base_dir() -> Path:
     if getattr(sys, "frozen", False):
@@ -62,9 +63,7 @@ def _parse_date(raw: str) -> str:
             return val.strftime("%Y-%m-%d")
 
     try:
-        import google.generativeai as genai
-        genai.configure(api_key=_get_api_key())
-        model    = genai.GenerativeModel("gemini-2.5-flash-lite")
+        model    = get_text_model("gemini-2.5-flash-lite")
         response = model.generate_content(
             f"Today is {today.strftime('%Y-%m-%d')}. "
             f"Convert this date expression to YYYY-MM-DD: '{raw}'. "
@@ -152,10 +151,7 @@ def _parse_flights_with_gemini(
     destination: str,
     date:        str,
 ) -> list[dict]:
-    import google.generativeai as genai
-
-    genai.configure(api_key=_get_api_key())
-    model = genai.GenerativeModel(
+    model = get_text_model(
         model_name="gemini-2.5-flash",
         system_instruction=(
             "You are a flight data extraction expert. "

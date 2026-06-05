@@ -4,12 +4,12 @@ import threading
 import json
 import sys
 import traceback
+import importlib
 from pathlib import Path
+from typing import Any
 
-import sounddevice as sd
-from google import genai
-from google.genai import types
 from ui import JarvisUI
+from llm_provider import get_api_key, get_provider
 from memory.memory_manager import (
     load_memory, update_memory, format_memory_for_prompt,
 )
@@ -47,10 +47,22 @@ CHANNELS            = 1
 SEND_SAMPLE_RATE    = 16000
 RECEIVE_SAMPLE_RATE = 24000
 CHUNK_SIZE          = 1024
+DEFAULT_TOOL_RESULT = "Done."
 
 def _get_api_key() -> str:
-    with open(API_CONFIG_PATH, "r", encoding="utf-8") as f:
-        return json.load(f)["gemini_api_key"]
+    return get_api_key("gemini")
+
+
+def _get_genai():
+    return importlib.import_module("google.genai")
+
+
+def _get_genai_types():
+    return importlib.import_module("google.genai.types")
+
+
+def _get_sounddevice():
+    return importlib.import_module("sounddevice")
 
 
 def _load_system_prompt() -> str:
@@ -493,7 +505,7 @@ class JarvisLive:
         self.ui.on_text_command = self._on_text_command
         self._turn_done_event: asyncio.Event | None = None
 
-    def _on_text_command(self, text: str):
+    def _send_text_turn(self, text: str) -> None:
         if not self._loop or not self.session:
             return
         asyncio.run_coroutine_threadsafe(
@@ -503,6 +515,9 @@ class JarvisLive:
             ),
             self._loop
         )
+
+    def _on_text_command(self, text: str):
+        self._send_text_turn(text)
 
     def set_speaking(self, value: bool):
         with self._speaking_lock:
@@ -513,23 +528,16 @@ class JarvisLive:
             self.ui.set_state("LISTENING")
 
     def speak(self, text: str):
-        if not self._loop or not self.session:
-            return
-        asyncio.run_coroutine_threadsafe(
-            self.session.send_client_content(
-                turns={"parts": [{"text": text}]},
-                turn_complete=True
-            ),
-            self._loop
-        )
+        self._send_text_turn(text)
 
     def speak_error(self, tool_name: str, error: str):
         short = str(error)[:120]
         self.ui.write_log(f"ERR: {tool_name} — {short}")
         self.speak(f"Sir, {tool_name} encountered an error. {short}")
 
-    def _build_config(self) -> types.LiveConnectConfig:
+    def _build_config(self) -> Any:
         from datetime import datetime
+        gtypes = _get_genai_types()
 
         memory     = load_memory()
         mem_str    = format_memory_for_prompt(memory)
@@ -548,156 +556,199 @@ class JarvisLive:
             parts.append(mem_str)
         parts.append(sys_prompt)
 
-        return types.LiveConnectConfig(
+        return gtypes.LiveConnectConfig(
             response_modalities=["AUDIO"],
             output_audio_transcription={},
             input_audio_transcription={},
             system_instruction="\n".join(parts),
             tools=[{"function_declarations": TOOL_DECLARATIONS}],
-            session_resumption=types.SessionResumptionConfig(),
-            speech_config=types.SpeechConfig(
-                voice_config=types.VoiceConfig(
-                    prebuilt_voice_config=types.PrebuiltVoiceConfig(
+            session_resumption=gtypes.SessionResumptionConfig(),
+            speech_config=gtypes.SpeechConfig(
+                voice_config=gtypes.VoiceConfig(
+                    prebuilt_voice_config=gtypes.PrebuiltVoiceConfig(
                         voice_name="Charon"
                     )
                 )
             ),
         )
 
-    async def _execute_tool(self, fc) -> types.FunctionResponse:
+    def _function_response(self, fc, result: Any, silent: bool = False) -> Any:
+        response = {"result": result}
+        if silent:
+            response["silent"] = True
+        return _get_genai_types().FunctionResponse(
+            id=fc.id,
+            name=fc.name,
+            response=response,
+        )
+
+    async def _run_sync_tool(self, handler, fallback: str = DEFAULT_TOOL_RESULT) -> str:
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(None, handler)
+        return result or fallback
+
+    def _save_memory_tool(self, args: dict) -> str:
+        category = args.get("category", "notes")
+        key      = args.get("key", "")
+        value    = args.get("value", "")
+        if key and value:
+            update_memory({category: {key: {"value": value}}})
+            print(f"[Memory] 💾 save_memory: {category}/{key} = {value}")
+        return "ok"
+
+    def _start_screen_process(self, args: dict) -> str:
+        threading.Thread(
+            target=screen_process,
+            kwargs={
+                "parameters": args,
+                "response": None,
+                "player": self.ui,
+                "session_memory": None,
+            },
+            daemon=True,
+        ).start()
+        return "Vision module activated. Stay completely silent — vision module will speak directly."
+
+    def _start_agent_task(self, args: dict) -> str:
+        from agent.task_queue import get_queue, TaskPriority
+
+        priority_map = {
+            "low": TaskPriority.LOW,
+            "normal": TaskPriority.NORMAL,
+            "high": TaskPriority.HIGH,
+        }
+        priority = priority_map.get(
+            args.get("priority", "normal").lower(),
+            TaskPriority.NORMAL,
+        )
+        task_id = get_queue().submit(
+            goal=args.get("goal", ""),
+            priority=priority,
+            speak=self.speak,
+        )
+        return f"Task started (ID: {task_id})."
+
+    def _shutdown_jarvis(self) -> str:
+        self.ui.write_log("SYS: Shutdown requested.")
+        self.speak("Goodbye, sir.")
+
+        def shutdown_later():
+            import os
+            import time
+
+            time.sleep(1)
+            os._exit(0)
+
+        threading.Thread(target=shutdown_later, daemon=True).start()
+        return "Shutdown requested."
+
+    def _with_current_file(self, args: dict) -> dict:
+        if not args.get("file_path") and self.ui.current_file:
+            args["file_path"] = self.ui.current_file
+        return args
+
+    def _tool_handlers(self, args: dict) -> dict:
+        return {
+            "open_app": (
+                lambda: open_app(parameters=args, response=None, player=self.ui),
+                f"Opened {args.get('app_name')}.",
+            ),
+            "weather_report": (
+                lambda: weather_action(parameters=args, player=self.ui),
+                "Weather delivered.",
+            ),
+            "browser_control": (
+                lambda: browser_control(parameters=args, player=self.ui),
+                DEFAULT_TOOL_RESULT,
+            ),
+            "file_controller": (
+                lambda: file_controller(parameters=args, player=self.ui),
+                DEFAULT_TOOL_RESULT,
+            ),
+            "send_message": (
+                lambda: send_message(parameters=args, response=None, player=self.ui, session_memory=None),
+                f"Message sent to {args.get('receiver')}.",
+            ),
+            "reminder": (
+                lambda: reminder(parameters=args, response=None, player=self.ui),
+                "Reminder set.",
+            ),
+            "youtube_video": (
+                lambda: youtube_video(parameters=args, response=None, player=self.ui),
+                DEFAULT_TOOL_RESULT,
+            ),
+            "computer_settings": (
+                lambda: computer_settings(parameters=args, response=None, player=self.ui),
+                DEFAULT_TOOL_RESULT,
+            ),
+            "desktop_control": (
+                lambda: desktop_control(parameters=args, player=self.ui),
+                DEFAULT_TOOL_RESULT,
+            ),
+            "code_helper": (
+                lambda: code_helper(parameters=args, player=self.ui, speak=self.speak),
+                DEFAULT_TOOL_RESULT,
+            ),
+            "dev_agent": (
+                lambda: dev_agent(parameters=args, player=self.ui, speak=self.speak),
+                DEFAULT_TOOL_RESULT,
+            ),
+            "web_search": (
+                lambda: web_search_action(parameters=args, player=self.ui),
+                DEFAULT_TOOL_RESULT,
+            ),
+            "file_processor": (
+                lambda: file_processor(parameters=self._with_current_file(args), player=self.ui, speak=self.speak),
+                DEFAULT_TOOL_RESULT,
+            ),
+            "computer_control": (
+                lambda: computer_control(parameters=args, player=self.ui),
+                DEFAULT_TOOL_RESULT,
+            ),
+            "game_updater": (
+                lambda: game_updater(parameters=args, player=self.ui, speak=self.speak),
+                DEFAULT_TOOL_RESULT,
+            ),
+            "flight_finder": (
+                lambda: flight_finder(parameters=args, player=self.ui),
+                DEFAULT_TOOL_RESULT,
+            ),
+        }
+
+    async def _execute_tool(self, fc) -> Any:
         name = fc.name
         args = dict(fc.args or {})
 
         print(f"[JARVIS] 🔧 {name}  {args}")
         self.ui.set_state("THINKING")
 
-        if name == "save_memory":
-            category = args.get("category", "notes")
-            key      = args.get("key", "")
-            value    = args.get("value", "")
-            if key and value:
-                update_memory({category: {key: {"value": value}}})
-                print(f"[Memory] 💾 save_memory: {category}/{key} = {value}")
-            if not self.ui.muted:
-                self.ui.set_state("LISTENING")
-            return types.FunctionResponse(
-                id=fc.id, name=name,
-                response={"result": "ok", "silent": True}
-            )
-
-        loop   = asyncio.get_event_loop()
-        result = "Done."
-
         try:
-            if name == "open_app":
-                r = await loop.run_in_executor(None, lambda: open_app(parameters=args, response=None, player=self.ui))
-                result = r or f"Opened {args.get('app_name')}."
-
-            elif name == "weather_report":
-                r = await loop.run_in_executor(None, lambda: weather_action(parameters=args, player=self.ui))
-                result = r or "Weather delivered."
-
-            elif name == "browser_control":
-                r = await loop.run_in_executor(None, lambda: browser_control(parameters=args, player=self.ui))
-                result = r or "Done."
-
-            elif name == "file_controller":
-                r = await loop.run_in_executor(None, lambda: file_controller(parameters=args, player=self.ui))
-                result = r or "Done."
-
-            elif name == "send_message":
-                r = await loop.run_in_executor(None, lambda: send_message(parameters=args, response=None, player=self.ui, session_memory=None))
-                result = r or f"Message sent to {args.get('receiver')}."
-
-            elif name == "reminder":
-                r = await loop.run_in_executor(None, lambda: reminder(parameters=args, response=None, player=self.ui))
-                result = r or "Reminder set."
-
-            elif name == "youtube_video":
-                r = await loop.run_in_executor(None, lambda: youtube_video(parameters=args, response=None, player=self.ui))
-                result = r or "Done."
-
-            elif name == "screen_process":
-                threading.Thread(
-                    target=screen_process,
-                    kwargs={"parameters": args, "response": None,
-                            "player": self.ui, "session_memory": None},
-                    daemon=True
-                ).start()
-                result = "Vision module activated. Stay completely silent — vision module will speak directly."
-
-            elif name == "computer_settings":
-                r = await loop.run_in_executor(None, lambda: computer_settings(parameters=args, response=None, player=self.ui))
-                result = r or "Done."
-
-            elif name == "desktop_control":
-                r = await loop.run_in_executor(None, lambda: desktop_control(parameters=args, player=self.ui))
-                result = r or "Done."
-
-            elif name == "code_helper":
-                r = await loop.run_in_executor(None, lambda: code_helper(parameters=args, player=self.ui, speak=self.speak))
-                result = r or "Done."
-
-            elif name == "dev_agent":
-                r = await loop.run_in_executor(None, lambda: dev_agent(parameters=args, player=self.ui, speak=self.speak))
-                result = r or "Done."
-
+            if name == "save_memory":
+                result = self._save_memory_tool(args)
+                return self._function_response(fc, result, silent=True)
+            if name == "screen_process":
+                result = self._start_screen_process(args)
             elif name == "agent_task":
-                from agent.task_queue import get_queue, TaskPriority
-                priority_map = {"low": TaskPriority.LOW, "normal": TaskPriority.NORMAL, "high": TaskPriority.HIGH}
-                priority = priority_map.get(args.get("priority", "normal").lower(), TaskPriority.NORMAL)
-                task_id  = get_queue().submit(goal=args.get("goal", ""), priority=priority, speak=self.speak)
-                result   = f"Task started (ID: {task_id})."
-
-            elif name == "web_search":
-                r = await loop.run_in_executor(None, lambda: web_search_action(parameters=args, player=self.ui))
-                result = r or "Done."
-            elif name == "file_processor":
-                if not args.get("file_path") and self.ui.current_file:
-                    args["file_path"] = self.ui.current_file
-                r = await loop.run_in_executor(
-                    None,
-                    lambda: file_processor(parameters=args, player=self.ui, speak=self.speak)
-                )
-                result = r or "Done."
-
-            elif name == "computer_control":
-                r = await loop.run_in_executor(None, lambda: computer_control(parameters=args, player=self.ui))
-                result = r or "Done."
-
-            elif name == "game_updater":
-                r = await loop.run_in_executor(None, lambda: game_updater(parameters=args, player=self.ui, speak=self.speak))
-                result = r or "Done."
-
-            elif name == "flight_finder":
-                r = await loop.run_in_executor(None, lambda: flight_finder(parameters=args, player=self.ui))
-                result = r or "Done."
-
+                result = self._start_agent_task(args)
             elif name == "shutdown_jarvis":
-                self.ui.write_log("SYS: Shutdown requested.")
-                self.speak("Goodbye, sir.")
-                def _shutdown():
-                    import time, os
-                    time.sleep(1)
-                    os._exit(0)
-                threading.Thread(target=_shutdown, daemon=True).start()
-
+                result = self._shutdown_jarvis()
             else:
-                result = f"Unknown tool: {name}"
-
+                handler = self._tool_handlers(args).get(name)
+                result = (
+                    await self._run_sync_tool(*handler)
+                    if handler
+                    else f"Unknown tool: {name}"
+                )
         except Exception as e:
             result = f"Tool '{name}' failed: {e}"
             traceback.print_exc()
             self.speak_error(name, e)
-
-        if not self.ui.muted:
-            self.ui.set_state("LISTENING")
+        finally:
+            if not self.ui.muted:
+                self.ui.set_state("LISTENING")
 
         print(f"[JARVIS] 📤 {name} → {str(result)[:80]}")
-        return types.FunctionResponse(
-            id=fc.id, name=name,
-            response={"result": result}
-        )
+        return self._function_response(fc, result)
 
     async def _send_realtime(self):
         while True:
@@ -707,6 +758,7 @@ class JarvisLive:
     async def _listen_audio(self):
         print("[JARVIS] 🎤 Mic started")
         loop = asyncio.get_event_loop()
+        sd = _get_sounddevice()
 
         def callback(indata, frames, time_info, status):
             with self._speaking_lock:
@@ -733,6 +785,59 @@ class JarvisLive:
             print(f"[JARVIS] ❌ Mic: {e}")
             raise
 
+    def _queue_audio_response(self, response) -> None:
+        if not response.data:
+            return
+        if self._turn_done_event and self._turn_done_event.is_set():
+            self._turn_done_event.clear()
+        self.audio_in_queue.put_nowait(response.data)
+
+    def _append_transcript(self, transcript, buffer: list[str]) -> None:
+        if transcript and transcript.text:
+            text = _clean_transcript(transcript.text)
+            if text:
+                buffer.append(text)
+
+    def _flush_turn_logs(self, out_buf: list[str], in_buf: list[str]) -> tuple[list[str], list[str]]:
+        if self._turn_done_event:
+            self._turn_done_event.set()
+
+        full_in = " ".join(in_buf).strip()
+        if full_in:
+            self.ui.write_log(f"You: {full_in}")
+
+        full_out = " ".join(out_buf).strip()
+        if full_out:
+            self.ui.write_log(f"Jarvis: {full_out}")
+
+        return [], []
+
+    def _collect_server_content(self, server_content, out_buf: list[str], in_buf: list[str]) -> tuple[list[str], list[str]]:
+        self._append_transcript(server_content.output_transcription, out_buf)
+        self._append_transcript(server_content.input_transcription, in_buf)
+        if server_content.turn_complete:
+            return self._flush_turn_logs(out_buf, in_buf)
+        return out_buf, in_buf
+
+    async def _handle_tool_call(self, tool_call) -> None:
+        fn_responses = []
+        for fc in tool_call.function_calls:
+            print(f"[JARVIS] 📞 {fc.name}")
+            fn_responses.append(await self._execute_tool(fc))
+        await self.session.send_tool_response(function_responses=fn_responses)
+
+    async def _handle_live_response(self, response, out_buf: list[str], in_buf: list[str]) -> tuple[list[str], list[str]]:
+        self._queue_audio_response(response)
+        if response.server_content:
+            out_buf, in_buf = self._collect_server_content(
+                response.server_content,
+                out_buf,
+                in_buf,
+            )
+        if response.tool_call:
+            await self._handle_tool_call(response.tool_call)
+        return out_buf, in_buf
+
     async def _receive_audio(self):
         print("[JARVIS] 👂 Recv started")
         out_buf, in_buf = [], []
@@ -740,48 +845,11 @@ class JarvisLive:
         try:
             while True:
                 async for response in self.session.receive():
-
-                    if response.data:
-                        if self._turn_done_event and self._turn_done_event.is_set():
-                            self._turn_done_event.clear()
-                        self.audio_in_queue.put_nowait(response.data)
-
-                    if response.server_content:
-                        sc = response.server_content
-
-                        if sc.output_transcription and sc.output_transcription.text:
-                            txt = _clean_transcript(sc.output_transcription.text)
-                            if txt:
-                                out_buf.append(txt)
-
-                        if sc.input_transcription and sc.input_transcription.text:
-                            txt = _clean_transcript(sc.input_transcription.text)
-                            if txt:
-                                in_buf.append(txt)
-
-                        if sc.turn_complete:
-                            if self._turn_done_event:
-                                self._turn_done_event.set()
-
-                            full_in = " ".join(in_buf).strip()
-                            if full_in:
-                                self.ui.write_log(f"You: {full_in}")
-                            in_buf = []
-
-                            full_out = " ".join(out_buf).strip()
-                            if full_out:
-                                self.ui.write_log(f"Jarvis: {full_out}")
-                            out_buf = []
-
-                    if response.tool_call:
-                        fn_responses = []
-                        for fc in response.tool_call.function_calls:
-                            print(f"[JARVIS] 📞 {fc.name}")
-                            fr = await self._execute_tool(fc)
-                            fn_responses.append(fr)
-                        await self.session.send_tool_response(
-                            function_responses=fn_responses
-                        )
+                    out_buf, in_buf = await self._handle_live_response(
+                        response,
+                        out_buf,
+                        in_buf,
+                    )
         except Exception as e:
             print(f"[JARVIS] ❌ Recv: {e}")
             traceback.print_exc()
@@ -789,6 +857,7 @@ class JarvisLive:
 
     async def _play_audio(self):
         print("[JARVIS] 🔊 Play started")
+        sd = _get_sounddevice()
 
         stream = sd.RawOutputStream(
             samplerate=RECEIVE_SAMPLE_RATE,
@@ -825,6 +894,7 @@ class JarvisLive:
             stream.close()
 
     async def run(self):
+        genai = _get_genai()
         client = genai.Client(
             api_key=_get_api_key(),
             http_options={"api_version": "v1beta"}
@@ -868,6 +938,23 @@ def main():
 
     def runner():
         ui.wait_for_api_key()
+        if get_provider() == "nvidia":
+            from agent.executor import AgentExecutor
+
+            executor = AgentExecutor()
+
+            def handle_text(text: str):
+                ui.set_state("THINKING")
+                ui.write_log(f"USER: {text}")
+                result = executor.execute(text)
+                ui.write_log(f"JARVIS: {result}")
+                ui.set_state("LISTENING")
+
+            ui.on_text_command = handle_text
+            ui.set_state("LISTENING")
+            ui.write_log("SYS: NVIDIA text mode online. Live voice requires Gemini.")
+            return
+
         jarvis = JarvisLive(ui)
         try:
             asyncio.run(jarvis.run())

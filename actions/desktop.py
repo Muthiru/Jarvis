@@ -9,10 +9,13 @@ import platform
 from pathlib import Path
 from datetime import datetime
 
+from llm_provider import get_text_model
+
 try:
     import pyautogui
     _PYAUTOGUI = True
-except ImportError:
+except Exception:
+    pyautogui = None
     _PYAUTOGUI = False
 
 _OS = platform.system()  # "Windows" | "Darwin" | "Linux"
@@ -102,10 +105,7 @@ def _execute_generated_code(code: str, player=None) -> str:
 
 
 def _ask_gemini_for_desktop_action(task: str) -> str:
-
-    import google.generativeai as genai
-    genai.configure(api_key=_get_api_key())
-    model = genai.GenerativeModel("gemini-2.5-flash")
+    model = get_text_model("gemini-2.5-flash")
 
     desktop = str(_get_desktop())
 

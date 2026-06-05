@@ -3,6 +3,8 @@ import json
 import sys
 from pathlib import Path
 
+from llm_provider import generate_text, get_api_key, get_provider
+
 def _get_base_dir() -> Path:
     if getattr(sys, "frozen", False):
         return Path(sys.executable).parent
@@ -14,11 +16,19 @@ API_CONFIG_PATH = BASE_DIR / "config" / "api_keys.json"
 
 
 def _get_api_key() -> str:
-    with open(API_CONFIG_PATH, "r", encoding="utf-8") as f:
-        return json.load(f)["gemini_api_key"]
+    return get_api_key("gemini")
 
 
 def _gemini_search(query: str) -> str:
+    if get_provider() == "nvidia":
+        results = _ddg_search(query, max_results=8)
+        context = _format_ddg(query, results)
+        return generate_text(
+            "Answer the user's search query using only these search results. "
+            "Be concise, factual, and include useful URLs when available.\n\n"
+            f"Query: {query}\n\n{context}"
+        )
+
     from google import genai
 
     client   = genai.Client(api_key=_get_api_key())

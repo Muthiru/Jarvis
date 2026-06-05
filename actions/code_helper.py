@@ -5,6 +5,8 @@ import re
 import time
 from pathlib import Path
 
+from llm_provider import get_api_key, get_text_model
+
 
 def get_base_dir():
     if getattr(sys, "frozen", False):
@@ -19,14 +21,11 @@ GEMINI_MODEL       = "gemini-2.5-flash"
 
 
 def _get_api_key() -> str:
-    with open(API_CONFIG_PATH, "r", encoding="utf-8") as f:
-        return json.load(f)["gemini_api_key"]
+    return get_api_key("gemini")
 
 
 def _get_gemini(model: str = GEMINI_MODEL):
-    import google.generativeai as genai
-    genai.configure(api_key=_get_api_key())
-    return genai.GenerativeModel(model)
+    return get_text_model(model)
 
 
 def _clean_code(text: str) -> str:

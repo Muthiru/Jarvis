@@ -9,12 +9,15 @@ import time
 import random
 from pathlib import Path
 
+from llm_provider import get_api_key
+
 try:
     import pyautogui
     pyautogui.FAILSAFE = True
     pyautogui.PAUSE    = 0.05
     _PYAUTOGUI = True
-except ImportError:
+except Exception:
+    pyautogui = None
     _PYAUTOGUI = False
 
 try:
@@ -44,7 +47,7 @@ def _get_os() -> str:
 
 
 def _get_api_key() -> str:
-    return _load_config().get("gemini_api_key", "")
+    return get_api_key("gemini")
 
 _SAFE_SCREENSHOT_ROOTS = (
     Path.home(),
@@ -66,7 +69,7 @@ def _safe_screenshot_path(requested: str | None) -> Path:
 
 def _require_pyautogui():
     if not _PYAUTOGUI:
-        raise RuntimeError("PyAutoGUI not installed. Run: pip install pyautogui")
+        raise RuntimeError("PyAutoGUI is unavailable. Install it and make sure a desktop session is accessible.")
 
 _FIRST_NAMES = [
     "Alex", "Jordan", "Taylor", "Morgan", "Casey", "Riley", "Drew", "Quinn",

@@ -59,7 +59,7 @@ python main.py
 | **OS** | Windows 10/11, macOS, or Linux |
 | **Python** | 3.11 or 3.12 |
 | **Microphone** | Required for voice interaction |
-| **API Key** | Free Gemini API key |
+| **API Key** | NVIDIA API key for text mode; Gemini API key still required for live voice/vision |
 
 ---
 

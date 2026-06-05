@@ -9,16 +9,19 @@ import shutil
 import subprocess
 import threading
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
-from playwright.async_api import (
-    async_playwright,
-    BrowserContext,
-    Page,
-    Playwright,
-    TimeoutError as PlaywrightTimeout,
-)
 _OS = platform.system()   # "Windows" | "Darwin" | "Linux"
+
+
+def _get_playwright_api():
+    try:
+        from playwright.async_api import async_playwright, TimeoutError
+    except ImportError as exc:
+        raise RuntimeError(
+            "Playwright is not installed. Run: pip install playwright"
+        ) from exc
+    return async_playwright, TimeoutError
 
 def _normalize_url(url: str) -> str:
     """
@@ -358,9 +361,10 @@ class _BrowserSession:
         self._thread:  threading.Thread | None          = None
         self._ready    = threading.Event()
 
-        self._pw:      Playwright     | None = None
-        self._context: BrowserContext | None = None
-        self._page:    Page           | None = None
+        self._pw:      Any | None = None
+        self._context: Any | None = None
+        self._page:    Any | None = None
+        self._timeout_error: type[Exception] = TimeoutError
 
     def start(self):
         if self._thread and self._thread.is_alive():
@@ -381,6 +385,8 @@ class _BrowserSession:
         self._loop.run_forever()
 
     async def _async_init(self):
+        async_playwright, playwright_timeout = _get_playwright_api()
+        self._timeout_error = playwright_timeout
         self._pw = await async_playwright().start()
 
     def run(self, coro, timeout: int = 60) -> str:
@@ -513,7 +519,7 @@ class _BrowserSession:
             raise RuntimeError(f"Could not launch {self.browser_name}: {e2}") from e2
 
 
-    async def _get_page(self) -> Page:
+    async def _get_page(self) -> Any:
         await self._launch()
         # If somehow page got closed, open a fresh one
         if self._page is None or self._page.is_closed():
@@ -527,12 +533,12 @@ class _BrowserSession:
         page     = await self._get_page()
         prev_url = page.url
 
-        async def _do_goto(p: Page) -> str:
+        async def _do_goto(p: Any) -> str:
             """Attempt navigation and return the resulting URL (may still be blank)."""
             try:
                 await p.goto(url, wait_until="domcontentloaded", timeout=30_000)
                 await asyncio.sleep(0.3)
-            except PlaywrightTimeout:
+            except self._timeout_error:
                 pass   # page may have partially loaded — check URL below
             except Exception as e:
                 print(f"[Browser] goto exception (non-fatal): {e}")
@@ -573,7 +579,7 @@ class _BrowserSession:
                 await page.click(selector, timeout=8_000)
                 return f"Clicked selector: {selector}"
             return "No selector or text provided."
-        except PlaywrightTimeout:
+        except self._timeout_error:
             return "Element not found (timeout)."
         except Exception as e:
             return f"Click error: {e}"

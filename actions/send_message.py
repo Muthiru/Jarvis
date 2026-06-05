@@ -9,7 +9,8 @@ try:
     pyautogui.FAILSAFE = True
     pyautogui.PAUSE    = 0.06
     _PYAUTOGUI = True
-except ImportError:
+except Exception:
+    pyautogui = None
     _PYAUTOGUI = False
 
 try:
@@ -35,7 +36,7 @@ def _get_os() -> str:
 
 def _require_pyautogui():
     if not _PYAUTOGUI:
-        raise RuntimeError("PyAutoGUI not installed. Run: pip install pyautogui")
+        raise RuntimeError("PyAutoGUI is unavailable. Install it and make sure a desktop session is accessible.")
 
 
 def _paste_text(text: str) -> None:

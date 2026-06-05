@@ -10,6 +10,7 @@ from typing import Callable
 
 from agent.planner       import create_plan, replan
 from agent.error_handler import analyze_error, generate_fix, ErrorDecision
+from llm_provider        import get_text_model
 
 
 def get_base_dir() -> Path:
@@ -22,13 +23,7 @@ BASE_DIR        = get_base_dir()
 API_CONFIG_PATH = BASE_DIR / "config" / "api_keys.json"
 
 
-def _get_api_key() -> str:
-    with open(API_CONFIG_PATH, "r", encoding="utf-8") as f:
-        return json.load(f)["gemini_api_key"]
-
 def _run_generated_code(description: str, speak: Callable | None = None) -> str:
-    import google.generativeai as genai
-
     if speak:
         speak("Writing custom code for this task, sir.")
 
@@ -46,8 +41,7 @@ def _run_generated_code(description: str, speak: Callable | None = None) -> str:
         except Exception:
             pass
 
-    genai.configure(api_key=_get_api_key())
-    model = genai.GenerativeModel(
+    model = get_text_model(
         model_name="gemini-2.5-flash",
         system_instruction=(
             "You are an expert Python developer. "
@@ -128,9 +122,7 @@ def _inject_context(params: dict, tool: str, step_results: dict, goal: str = "")
 
     return params
 def _detect_language(text: str) -> str:
-    import google.generativeai as genai
-    genai.configure(api_key=_get_api_key())
-    model = genai.GenerativeModel("gemini-2.5-flash-lite")
+    model = get_text_model("gemini-2.5-flash-lite")
     try:
         response = model.generate_content(
             f"What language is this text written in? "
@@ -146,9 +138,7 @@ def _translate_to_goal_language(content: str, goal: str) -> str:
     if not goal:
         return content
     try:
-        import google.generativeai as genai
-        genai.configure(api_key=_get_api_key())
-        model = genai.GenerativeModel("gemini-2.5-flash")
+        model = get_text_model("gemini-2.5-flash")
 
         target_lang = _detect_language(goal)
         print(f"[Executor] 🌐 Translating to: {target_lang}")
@@ -377,9 +367,7 @@ class AgentExecutor:
     def _summarize(self, goal: str, completed_steps: list, speak: Callable | None) -> str:
         fallback = f"All done, sir. Completed {len(completed_steps)} steps for: {goal[:60]}."
         try:
-            import google.generativeai as genai
-            genai.configure(api_key=_get_api_key())
-            model     = genai.GenerativeModel(model_name="gemini-2.5-flash-lite")
+            model     = get_text_model(model_name="gemini-2.5-flash-lite")
             steps_str = "\n".join(f"- {s.get('description', '')}" for s in completed_steps)
             prompt    = (
                 f'User goal: "{goal}"\n'

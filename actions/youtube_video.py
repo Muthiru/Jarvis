@@ -9,7 +9,6 @@ from pathlib import Path
 from datetime import datetime
 from urllib.parse import quote_plus
 
-import pyautogui
 import numpy as np
 
 try:
@@ -25,6 +24,7 @@ except ImportError:
     _TRANSCRIPT_OK = False
 
 from config import get_os, is_windows, is_mac, is_linux
+from llm_provider import get_text_model
 
 
 def _get_base_dir() -> Path:
@@ -158,10 +158,7 @@ def _get_transcript(video_id: str) -> str | None:
 
 
 def _summarize_with_gemini(transcript: str, video_url: str) -> str:
-    import google.generativeai as genai
-
-    genai.configure(api_key=_get_api_key())
-    model = genai.GenerativeModel(
+    model = get_text_model(
         model_name="gemini-2.5-flash",
         system_instruction=(
             "You are JARVIS, an AI assistant. "

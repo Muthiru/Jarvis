@@ -1,24 +1,25 @@
-﻿sounddevice
+sounddevice
 google-genai
 google-generativeai
+openai
 pillow
 requests
 beautifulsoup4
 duckduckgo-search
-playwright          
+playwright
 pyautogui
 pyperclip
-pygetwindow       
+pygetwindow; platform_system == "Windows"
 opencv-python
 numpy
 mss
-Pillow
 psutil
-comtypes
-pycaw               
-win10toast          
+plyer
+comtypes; platform_system == "Windows"
+pycaw; platform_system == "Windows"
+win10toast; platform_system == "Windows"
+pywinauto; platform_system == "Windows"
 send2trash
 youtube-transcript-api
-pywinauto
 python-pptx
 pyqt6

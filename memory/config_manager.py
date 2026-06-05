@@ -17,7 +17,7 @@ def ensure_config_dir() -> None:
 def config_exists() -> bool:
     return CONFIG_FILE.exists()
 
-def save_api_keys(gemini_api_key: str) -> None:
+def save_api_keys(api_key: str, provider: str = "nvidia") -> None:
     ensure_config_dir()
 
     data: dict = {}
@@ -27,7 +27,13 @@ def save_api_keys(gemini_api_key: str) -> None:
         except Exception:
             data = {}
 
-    data["gemini_api_key"] = gemini_api_key.strip()
+    provider = provider.strip().lower() or "nvidia"
+    data["ai_provider"] = provider
+    if provider == "nvidia":
+        data["nvidia_api_key"] = api_key.strip()
+        data.setdefault("nvidia_model", "nvidia/llama-3.3-nemotron-super-49b-v1.5")
+    else:
+        data["gemini_api_key"] = api_key.strip()
 
     CONFIG_FILE.write_text(
         json.dumps(data, indent=2),
@@ -46,6 +52,10 @@ def load_api_keys() -> dict:
 def get_gemini_key() -> str | None:
     return load_api_keys().get("gemini_api_key")
 
+def get_nvidia_key() -> str | None:
+    return load_api_keys().get("nvidia_api_key")
+
 def is_configured() -> bool:
-    key = get_gemini_key()
+    data = load_api_keys()
+    key = data.get("nvidia_api_key") or data.get("gemini_api_key")
     return bool(key and len(key) > 15)
