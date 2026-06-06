@@ -12,6 +12,7 @@ from ui import JarvisUI
 from llm_provider import get_api_key, get_provider
 from memory.memory_manager import (
     load_memory, update_memory, format_memory_for_prompt,
+    remember,
 )
 
 from actions.file_processor import file_processor
@@ -935,6 +936,11 @@ class JarvisLive:
 
 def main():
     ui = JarvisUI("face.png")
+    remember(
+        key="obsidian-codebase",
+        value="Initial note: codebase indexed for context.",
+        category="notes",
+    )
 
     def runner():
         ui.wait_for_api_key()

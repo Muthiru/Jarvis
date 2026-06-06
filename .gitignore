@@ -1,3 +1,10 @@
+JARVIS/
+*.md
+memory.txt
+new_note.md
 config/api_keys.json
 __pycache__/
 **/__pycache__/
+.obsidian
+JARVIS
+JARVIS_BRAIN/
