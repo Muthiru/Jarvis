@@ -34,6 +34,7 @@ It's not just an assistant — it's an extension of your digital life.
 - 📂 **Advanced File Handling** — New support for direct file uploads. Drop PDFs, source code, or images into the assistant to have them analyzed, summarized, or edited instantly.
 - 🎨 **Adaptive & Flexible UI** — A complete overhaul of the interface. The new UI is fully resizable and responsive, featuring transparency controls and customizable layouts to fit your workspace perfectly.
 - 🐧🍎 **Refined Cross-Platform Stability** — Major fixes for macOS and Linux compatibility. Core system actions are now more consistent across all three major operating systems.
+- 🐧 Wayland Enhancements — Added graceful fallbacks for volume, brightness, screenshot, clipboard, dark mode, and window management. Uses wpctl, grim, wl-clipboard, and DBus for KDE dark mode toggling.
 - ⚡ **Optimized Core Engine** — Significant performance boost in tool-calling logic and response generation, resulting in a 40% faster interaction speed.
 
 ---

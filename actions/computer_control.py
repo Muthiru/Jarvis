@@ -8,6 +8,11 @@ import sys
 import time
 import random
 from pathlib import Path
+import os
+import shutil
+_WMCTRL_PRESENT = shutil.which("wmctrl") is not None
+_XDOTOOL_PRESENT = shutil.which("xdotool") is not None
+
 
 from llm_provider import get_api_key
 
@@ -70,6 +75,9 @@ def _safe_screenshot_path(requested: str | None) -> Path:
 def _require_pyautogui():
     if not _PYAUTOGUI:
         raise RuntimeError("PyAutoGUI is unavailable. Install it and make sure a desktop session is accessible.")
+    # Detect if running under Wayland without an X server
+    if os.getenv("WAYLAND_DISPLAY") and not os.getenv("DISPLAY"):
+        print("[ComputerControl] ⚠️ pyautogui may not work on Wayland. Some actions may fail.")
 
 _FIRST_NAMES = [
     "Alex", "Jordan", "Taylor", "Morgan", "Casey", "Riley", "Drew", "Quinn",
@@ -214,6 +222,13 @@ def _drag(x1: int, y1: int, x2: int, y2: int, duration: float = 0.5) -> str:
 def _clipboard_get() -> str:
     if _PYPERCLIP:
         return pyperclip.paste()
+    if os.getenv("WAYLAND_DISPLAY"):
+        try:
+            result = subprocess.run(['wl-paste'], capture_output=True, text=True, timeout=2)
+            if result.returncode == 0:
+                return result.stdout
+        except Exception:
+            pass
     _hotkey("ctrl", "c")
     time.sleep(0.2)
     return "(copied — pyperclip unavailable for read)"
@@ -226,15 +241,46 @@ def _clipboard_paste(text: str) -> str:
         _require_pyautogui()
         pyautogui.hotkey("ctrl", "v")
         return f"Pasted: {text[:60]}{'…' if len(text) > 60 else ''}"
+    if os.getenv("WAYLAND_DISPLAY"):
+        try:
+            subprocess.run(['wl-copy'], input=text.encode(), stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=2)
+            return f"Pasted: {text[:60]}{'…' if len(text) > 60 else ''}"
+        except Exception:
+            pass
     return "pyperclip not available"
 
 
 def _screenshot(save_path: str | None = None) -> str:
     _require_pyautogui()
     path = _safe_screenshot_path(save_path)
+    if os.getenv("WAYLAND_DISPLAY"):
+        try:
+            subprocess.run(['grim', str(path)], capture_output=True, timeout=5)
+            return f"Screenshot saved: {path}"
+        except Exception as e:
+            print(f"[ComputerControl] ⚠️ grim screenshot failed: {e}")
     img  = pyautogui.screenshot()
     img.save(str(path))
     return f"Screenshot saved: {path}"
+
+def _window_count() -> str:
+    try:
+        res = subprocess.run(['hyprctl', 'clients'], capture_output=True, text=True, timeout=5)
+        if res.returncode == 0:
+            windows = [line for line in res.stdout.splitlines() if line.strip()]
+            return f"Open windows: {len(windows)}"
+    except Exception as e:
+        return f"Window count failed: {e}"
+    return "Could not count windows"
+
+def _switch_workspace(name: str) -> str:
+    if not name:
+        return "No workspace name specified"
+    try:
+        subprocess.run(['hyprctl', 'dispatch', 'workspace', name], capture_output=True, timeout=5)
+        return f"Switched to workspace {name}"
+    except Exception as e:
+        return f"Failed to switch workspace: {e}"
 
 
 def _clear_field() -> str:
@@ -452,6 +498,11 @@ def computer_control(
 
         if action == "paste":
             return _clipboard_paste(params.get("text", ""))
+        if action == "window_count":
+            return _window_count()
+        if action == "switch_workspace":
+            name = params.get("workspace") or params.get("name") or params.get("value")
+            return _switch_workspace(name)
 
         if action == "screenshot":
             return _screenshot(params.get("path"))

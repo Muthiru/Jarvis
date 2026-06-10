@@ -7,7 +7,11 @@ import subprocess
 import platform
 from pathlib import Path
 
+from actions.setup_helper import list_dependencies
+from actions.computer_control import _window_count, _switch_workspace
+
 from llm_provider import get_text_model
+
 
 try:
     import pyautogui
@@ -58,22 +62,28 @@ def volume_up():
         for _ in range(5): pyautogui.press("volumeup")
     elif _OS == "Darwin":
         subprocess.run(["osascript", "-e",
-            "set volume output volume (output volume of (get volume settings) + 10)"],
+            "set volume output volume (output volume of (get volume settings) + 10)"] ,
             capture_output=True)
     else:
-        subprocess.run(["pactl", "set-sink-volume", "@DEFAULT_SINK@", "+10%"],
-            capture_output=True)
+        if subprocess.run(["which", "wpctl"], capture_output=True).returncode == 0:
+            subprocess.run(["wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", "+10%"], capture_output=True)
+        else:
+            subprocess.run(["pactl", "set-sink-volume", "@DEFAULT_SINK@", "+10%"], capture_output=True)
+
 
 def volume_down():
     if _OS == "Windows":
         for _ in range(5): pyautogui.press("volumedown")
     elif _OS == "Darwin":
         subprocess.run(["osascript", "-e",
-            "set volume output volume (output volume of (get volume settings) - 10)"],
+            "set volume output volume (output volume of (get volume settings) - 10)"] ,
             capture_output=True)
     else:
-        subprocess.run(["pactl", "set-sink-volume", "@DEFAULT_SINK@", "-10%"],
-            capture_output=True)
+        if subprocess.run(["which", "wpctl"], capture_output=True).returncode == 0:
+            subprocess.run(["wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", "-10%"], capture_output=True)
+        else:
+            subprocess.run(["pactl", "set-sink-volume", "@DEFAULT_SINK@", "-10%"], capture_output=True)
+
 
 def volume_mute():
     if _OS == "Windows":
@@ -82,8 +92,10 @@ def volume_mute():
         subprocess.run(["osascript", "-e", "set volume with output muted"],
             capture_output=True)
     else:
-        subprocess.run(["pactl", "set-sink-mute", "@DEFAULT_SINK@", "toggle"],
-            capture_output=True)
+        if subprocess.run(["which", "wpctl"], capture_output=True).returncode == 0:
+            subprocess.run(["wpctl", "set-sink-mute", "@DEFAULT_AUDIO_SINK@", "toggle"], capture_output=True)
+        else:
+            subprocess.run(["pactl", "set-sink-mute", "@DEFAULT_SINK@", "toggle"], capture_output=True)
 
 def volume_set(value: int):
     value = max(0, min(100, int(value)))
@@ -108,8 +120,10 @@ def volume_set(value: int):
             capture_output=True)
         return
     else:
-        subprocess.run(["pactl", "set-sink-volume", "@DEFAULT_SINK@", f"{value}%"],
-            capture_output=True)
+        if subprocess.run(["which", "wpctl"], capture_output=True).returncode == 0:
+            subprocess.run(["wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", f"{value}%"], capture_output=True)
+        else:
+            subprocess.run(["pactl", "set-sink-volume", "@DEFAULT_SINK@", f"{value}%"], capture_output=True)
         return
 
 def brightness_up():
@@ -118,17 +132,19 @@ def brightness_up():
             'tell application "System Events" to key code 144'],
             capture_output=True)
     elif _OS == "Linux":
-        if subprocess.run(["which", "brightnessctl"],
-                capture_output=True).returncode == 0:
-            subprocess.run(["brightnessctl", "set", "+10%"], capture_output=True)
-        else:
-            subprocess.run(
-                'xrandr --output $(xrandr | grep " connected" | head -1 | cut -d " " -f1)'
-                ' --brightness $(python3 -c "import subprocess; '
-                'b=float(subprocess.check_output([\"xrandr\",\"--verbose\"]).decode()'
-                '.split(\"Brightness:\")[1].split()[0]); print(min(1.0,b+0.1))")',
-                shell=True, capture_output=True
-            )
+            try:
+                res = subprocess.run(["xrandr", "--verbose"], capture_output=True, text=True, timeout=5)
+                m = re.search(r"Brightness:\s+([\d.]+)", res.stdout)
+                if m:
+                    current = float(m.group(1))
+                    new_val = min(1.0, current + 0.1)
+                else:
+                    new_val = 0.5
+                output_name = subprocess.run(["xrandr", "--query"], capture_output=True, text=True).stdout.splitlines()[0].split()[0]
+                subprocess.run(["xrandr", "--output", output_name, "--brightness", str(new_val)], capture_output=True, timeout=5)
+            except Exception as e:
+                print(f"[Settings] brightness fallback failed: {e}")
+
     else:
         try:
             subprocess.run(
@@ -147,17 +163,19 @@ def brightness_down():
             'tell application "System Events" to key code 145'],
             capture_output=True)
     elif _OS == "Linux":
-        if subprocess.run(["which", "brightnessctl"],
-                capture_output=True).returncode == 0:
-            subprocess.run(["brightnessctl", "set", "10%-"], capture_output=True)
-        else:
-            subprocess.run(
-                'xrandr --output $(xrandr | grep " connected" | head -1 | cut -d " " -f1)'
-                ' --brightness $(python3 -c "import subprocess; '
-                'b=float(subprocess.check_output([\"xrandr\",\"--verbose\"]).decode()'
-                '.split(\"Brightness:\")[1].split()[0]); print(max(0.1,b-0.1))")',
-                shell=True, capture_output=True
-            )
+        try:
+            res = subprocess.run(["xrandr", "--verbose"], capture_output=True, text=True, timeout=5)
+            m = re.search(r"Brightness:\s+([\d.]+)", res.stdout)
+            if m:
+                current = float(m.group(1))
+                new_val = max(0.0, current - 0.1)
+            else:
+                new_val = 0.2
+            output_name = subprocess.run(["xrandr", "--query"], capture_output=True, text=True).stdout.splitlines()[0].split()[0]
+            subprocess.run(["xrandr", "--output", output_name, "--brightness", str(new_val)], capture_output=True, timeout=5)
+        except Exception as e:
+            print(f"[Settings] brightness fallback failed: {e}")
+
     else:
         try:
             subprocess.run(
@@ -370,6 +388,10 @@ def take_screenshot():
                 return
         pyautogui.hotkey("ctrl", "print_screen")
 
+def open_terminal():
+    import actions.open_app as oa
+    return oa.open_app(parameters={"app_name": "terminal"})
+
 def lock_screen():
     if _OS == "Windows":
         pyautogui.hotkey("win", "l")
@@ -441,20 +463,34 @@ def dark_mode():
             winreg.CloseKey(key)
         except Exception as e:
             print(f"[Settings] dark_mode registry failed: {e}")
-    else:
-        try:
-            result = subprocess.run(
-                ["gsettings", "get", "org.gnome.desktop.interface", "color-scheme"],
-                capture_output=True, text=True
-            )
-            current = result.stdout.strip()
-            new_scheme = "'default'" if "dark" in current else "'prefer-dark'"
-            subprocess.run(
-                ["gsettings", "set", "org.gnome.desktop.interface", "color-scheme", new_scheme],
-                capture_output=True
-            )
-        except Exception as e:
-            print(f"[Settings] dark_mode Linux failed: {e}")
+        else:
+            try:
+                result = subprocess.run(
+                    ["gsettings", "get", "org.gnome.desktop.interface", "color-scheme"],
+                    capture_output=True, text=True
+                )
+                current = result.stdout.strip()
+                new_scheme = "'default'" if "dark" in current else "'prefer-dark'"
+                subprocess.run(
+                    ["gsettings", "set", "org.gnome.desktop.interface", "color-scheme", new_scheme],
+                    capture_output=True
+                )
+            except Exception as e:
+                print(f"[Settings] dark_mode Linux failed: {e}")
+            # KDE specific dark mode toggle via DBus if running
+            try:
+                result = subprocess.run(["pgrep", "plasmashell"], capture_output=True, text=True)
+                if result.returncode == 0:
+                    subprocess.run(
+                        ["dbus-send", "--session", "--dest=org.kde.plasmashell",
+                         "--type=method_call", "/PlasmaShell",
+                         "org.kde.PlasmaShell.toggleDarkMode"],
+                        capture_output=True, text=True
+                    )
+                    return
+            except Exception as e:
+                print(f"[Settings] dark_mode KDE failed: {e}")
+
 
 def toggle_wifi():
     if _OS == "Darwin":
@@ -519,6 +555,7 @@ ACTION_MAP: dict[str, callable] = {
     "play_pause":          pause_video,
     "close_app":           close_app,
     "close_window":        close_window,
+    "window_count":         _window_count,
     "full_screen":         full_screen,
     "fullscreen":          full_screen,
     "minimize":            minimize_window,
@@ -526,6 +563,7 @@ ACTION_MAP: dict[str, callable] = {
     "snap_left":           snap_left,
     "snap_right":          snap_right,
     "switch_window":       switch_window,
+    "switch_workspace":     _switch_workspace,
     "show_desktop":        show_desktop,
     "task_manager":        open_task_manager,
     "focus_search":        focus_search,
@@ -557,7 +595,9 @@ ACTION_MAP: dict[str, callable] = {
     "enter":               press_enter,
     "escape":              press_escape,
     "screenshot":          take_screenshot,
+    "check_dependencies":  list_dependencies,
     "lock_screen":         lock_screen,
+
     "open_settings":       open_system_settings,
     "file_explorer":       open_file_explorer,
     "open_run":            open_run,
