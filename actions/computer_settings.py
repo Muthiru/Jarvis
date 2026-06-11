@@ -29,6 +29,10 @@ except ImportError:
     _PYPERCLIP = False
 
 _OS = platform.system()  # "Windows" | "Darwin" | "Linux"
+# Default audio/sink strings for different OSes
+DEFAULT_AUDIO_SINK = DEFAULT_AUDIO_SINK
+DEFAULT_SINK = DEFAULT_SINK
+ACTIVE_WINDOW = "ACTIVE_WINDOW"
 
 
 def _get_base_dir() -> Path:
@@ -66,9 +70,9 @@ def volume_up():
             capture_output=True)
     else:
         if subprocess.run(["which", "wpctl"], capture_output=True).returncode == 0:
-            subprocess.run(["wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", "+10%"], capture_output=True)
+            subprocess.run(["wpctl", "set-volume", DEFAULT_AUDIO_SINK, "+10%"], capture_output=True)
         else:
-            subprocess.run(["pactl", "set-sink-volume", "@DEFAULT_SINK@", "+10%"], capture_output=True)
+            subprocess.run(["pactl", "set-sink-volume", DEFAULT_SINK, "+10%"], capture_output=True)
 
 
 def volume_down():
@@ -80,9 +84,9 @@ def volume_down():
             capture_output=True)
     else:
         if subprocess.run(["which", "wpctl"], capture_output=True).returncode == 0:
-            subprocess.run(["wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", "-10%"], capture_output=True)
+            subprocess.run(["wpctl", "set-volume", DEFAULT_AUDIO_SINK, "-10%"], capture_output=True)
         else:
-            subprocess.run(["pactl", "set-sink-volume", "@DEFAULT_SINK@", "-10%"], capture_output=True)
+            subprocess.run(["pactl", "set-sink-volume", DEFAULT_SINK, "-10%"], capture_output=True)
 
 
 def volume_mute():
@@ -93,9 +97,9 @@ def volume_mute():
             capture_output=True)
     else:
         if subprocess.run(["which", "wpctl"], capture_output=True).returncode == 0:
-            subprocess.run(["wpctl", "set-sink-mute", "@DEFAULT_AUDIO_SINK@", "toggle"], capture_output=True)
+            subprocess.run(["wpctl", "set-sink-mute", DEFAULT_AUDIO_SINK, "toggle"], capture_output=True)
         else:
-            subprocess.run(["pactl", "set-sink-mute", "@DEFAULT_SINK@", "toggle"], capture_output=True)
+            subprocess.run(["pactl", "set-sink-mute", DEFAULT_SINK, "toggle"], capture_output=True)
 
 def volume_set(value: int):
     value = max(0, min(100, int(value)))
@@ -103,14 +107,17 @@ def volume_set(value: int):
         try:
             import math
             from ctypes import cast, POINTER
-            from comtypes import CLSCTX_ALL
-            from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
+            import importlib
+            comtypes = importlib.import_module("comtypes")
+            pycaw = importlib.import_module("pycaw.pycaw")
+            CLSCTX_ALL = comtypes.CLSCTX_ALL
+            AudioUtilities = pycaw.AudioUtilities
+            IAudioEndpointVolume = pycaw.IAudioEndpointVolume
             devices   = AudioUtilities.GetSpeakers()
             interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
             vol       = cast(interface, POINTER(IAudioEndpointVolume))
             vol_db    = -65.25 if value == 0 else max(-65.25, 20 * math.log10(value / 100))
             vol.SetMasterVolumeLevel(vol_db, None)
-            return
         except Exception as e:
             print(f"[Settings] pycaw failed, using keypress fallback: {e}")
             pyautogui.press("volumemute")
@@ -118,13 +125,11 @@ def volume_set(value: int):
     elif _OS == "Darwin":
         subprocess.run(["osascript", "-e", f"set volume output volume {value}"],
             capture_output=True)
-        return
     else:
         if subprocess.run(["which", "wpctl"], capture_output=True).returncode == 0:
-            subprocess.run(["wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", f"{value}%"], capture_output=True)
+            subprocess.run(["wpctl", "set-volume", DEFAULT_AUDIO_SINK, f"{value}%"], capture_output=True)
         else:
-            subprocess.run(["pactl", "set-sink-volume", "@DEFAULT_SINK@", f"{value}%"], capture_output=True)
-        return
+            subprocess.run(["pactl", "set-sink-volume", DEFAULT_SINK, f"{value}%"], capture_output=True)
 
 def brightness_up():
     if _OS == "Darwin":
@@ -214,7 +219,7 @@ def maximize_window():
         pyautogui.hotkey("win", "up")
     else:
         try:
-            subprocess.run(["wmctrl", "-r", ":ACTIVE:", "-b", "add,maximized_vert,maximized_horz"],
+            subprocess.run(["wmctrl", "-r", "ACTIVE_WINDOW", "-b", "add,maximized_vert,maximized_horz"],
                 capture_output=True)
         except Exception:
             pyautogui.hotkey("super", "up")
@@ -224,7 +229,7 @@ def snap_left():
         pyautogui.hotkey("win", "left")
     elif _OS == "Linux":
         try:
-            subprocess.run(["wmctrl", "-r", ":ACTIVE:", "-e", "0,0,0,960,1080"],
+            subprocess.run(["wmctrl", "-r", "ACTIVE_WINDOW", "-e", "0,0,0,960,1080"],
                 capture_output=True)
         except Exception:
             pass
@@ -234,7 +239,7 @@ def snap_right():
         pyautogui.hotkey("win", "right")
     elif _OS == "Linux":
         try:
-            subprocess.run(["wmctrl", "-r", ":ACTIVE:", "-e", "0,960,0,960,1080"],
+            subprocess.run(["wmctrl", "-r", "ACTIVE_WINDOW", "-e", "0,960,0,960,1080"],
                 capture_output=True)
         except Exception:
             pass
@@ -645,9 +650,7 @@ Rules:
 
 def computer_settings(
     parameters: dict = None,
-    response=None,
     player=None,
-    session_memory=None,
 ) -> str:
     if not _PYAUTOGUI:
         return "pyautogui is not installed. Run: pip install pyautogui"

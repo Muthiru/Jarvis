@@ -8,6 +8,8 @@ import re
 import sys
 import threading
 import time
+import os
+import subprocess
 from pathlib import Path
 from typing import Optional
 
@@ -77,6 +79,7 @@ _LIVE_MODEL         = "models/gemini-2.5-flash-native-audio-preview-12-2025"
 _CHANNELS           = 1
 _RECEIVE_SAMPLE_RATE = 24_000
 _CHUNK_SIZE         = 1_024
+IMAGE_JPEG = "image/jpeg"
 
 _IMG_MAX_W = 640
 _IMG_MAX_H = 360
@@ -101,7 +104,7 @@ def _compress(img_bytes: bytes, source_format: str = "PNG") -> tuple[bytes, str]
         img.thumbnail((_IMG_MAX_W, _IMG_MAX_H), PIL.Image.BILINEAR)
         buf = io.BytesIO()
         img.save(buf, format="JPEG", quality=_JPEG_Q, optimize=False)
-        return buf.getvalue(), "image/jpeg"
+        return buf.getvalue(), IMAGE_JPEG
     except Exception as e:
         print(f"[Vision] ⚠️  Image compress failed: {e}")
         return img_bytes, f"image/{source_format.lower()}"
@@ -111,8 +114,18 @@ def _capture_screen() -> tuple[bytes, str]:
     if not _MSS:
         raise RuntimeError("mss is not installed. Run: pip install mss")
 
+    # Wayland-friendly screenshot fallback
+    if os.getenv("WAYLAND_DISPLAY"):
+        try:
+            result = subprocess.run(["grim", "-"], capture_output=True, timeout=5)
+            png = result.stdout
+            return _compress(png, "PNG")
+        except Exception:
+            # Fall back to mss if grim fails
+            pass
+
     with mss.mss() as sct:
-        monitors = sct.monitors          # [0] = all combined, [1..n] = real screens
+        monitors = sct.monitors
         target   = monitors[1] if len(monitors) > 1 else monitors[0]
         shot     = sct.grab(target)
         png      = mss.tools.to_png(shot.rgb, shot.size)
@@ -198,10 +211,10 @@ def _capture_camera() -> tuple[bytes, str]:
         img.thumbnail((_IMG_MAX_W, _IMG_MAX_H), PIL.Image.BILINEAR)
         buf = io.BytesIO()
         img.save(buf, format="JPEG", quality=_JPEG_Q)
-        return buf.getvalue(), "image/jpeg"
+        return buf.getvalue(), IMAGE_JPEG
 
     _, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, _JPEG_Q])
-    return buf.tobytes(), "image/jpeg"
+    return buf.tobytes(), IMAGE_JPEG
 
 class _VisionSession:
     def __init__(self):
@@ -262,12 +275,12 @@ class _VisionSession:
             output_audio_transcription={},
             system_instruction=_SYSTEM_PROMPT,
             speech_config=gtypes.SpeechConfig(
-                voice_config=gtypes.VoiceConfig(
-                    prebuilt_voice_config=gtypes.PrebuiltVoiceConfig(
-                        voice_name="Charon"
-                    )
-                )
-            ),
+                        voice_config=gtypes.VoiceConfig(
+                            prebuilt_voice_config=gtypes.PrebuiltVoiceConfig(
+                                voice_name="Charon"
+                            )
+                        )
+                    ),
         )
 
         backoff = 2.0
@@ -360,9 +373,6 @@ class _VisionSession:
             while True:
                 chunk = await self._audio_in.get()
                 await asyncio.to_thread(stream.write, chunk)
-        except Exception as e:
-            print(f"[Vision] ❌ Play error: {e}")
-            raise
         finally:
             stream.stop()
             stream.close()
@@ -382,12 +392,7 @@ def _ensure_session(player=None) -> None:
             _session._player = player
 
 
-def screen_process(
-    parameters:     dict,
-    response=None,
-    player=None,
-    session_memory=None,
-) -> bool:
+def screen_process(parameters: dict, player=None) -> bool:
 
     params    = parameters or {}
     user_text = (params.get("text") or params.get("user_text") or "").strip()

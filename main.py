@@ -537,14 +537,18 @@ class JarvisLive:
         self.speak(f"Sir, {tool_name} encountered an error. {short}")
 
     def _build_config(self) -> Any:
+        """Construct LiveConnect configuration with voice.
+
+        Uses the default voice ``Charon`` which was confirmed to work.
+        """
         from datetime import datetime
         gtypes = _get_genai_types()
 
-        memory     = load_memory()
-        mem_str    = format_memory_for_prompt(memory)
+        memory = load_memory()
+        mem_str = format_memory_for_prompt(memory)
         sys_prompt = _load_system_prompt()
 
-        now      = datetime.now()
+        now = datetime.now()
         time_str = now.strftime("%A, %B %d, %Y — %I:%M %p")
         time_ctx = (
             f"[CURRENT DATE & TIME]\n"
@@ -602,9 +606,7 @@ class JarvisLive:
             target=screen_process,
             kwargs={
                 "parameters": args,
-                "response": None,
                 "player": self.ui,
-                "session_memory": None,
             },
             daemon=True,
         ).start()
@@ -679,7 +681,7 @@ class JarvisLive:
                 DEFAULT_TOOL_RESULT,
             ),
             "computer_settings": (
-                lambda: computer_settings(parameters=args, response=None, player=self.ui),
+                lambda: computer_settings(parameters=args, player=self.ui),
                 DEFAULT_TOOL_RESULT,
             ),
             "desktop_control": (
